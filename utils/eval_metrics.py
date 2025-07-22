@@ -1,5 +1,8 @@
 from sklearn.metrics import accuracy_score
 import numpy as np
+import torch
+from config import Config
+
 
 def evaluate_model(model, dataset, dataset_name):
     """
@@ -14,10 +17,10 @@ def evaluate_model(model, dataset, dataset_name):
         inputs = {k: v.to(Config.DEVICE) for k, v in batch.items() if k != 'labels'}
         with torch.no_grad():
             outputs = model(**inputs)
-        
+    
         preds = torch.argmax(outputs.logits, dim=-1)
         predictions.extend(preds.cpu().numpy())
-        true_labels.extend(batch['labels'].cpu().numpy())
+        true_labels.append(batch['labels'].cpu().item())
     
     accuracy = accuracy_score(true_labels, predictions)
     
