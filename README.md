@@ -22,7 +22,7 @@ This research project explores how to mitigate catastrophic forgetting during do
 ├── data/
 │   ├── ag_news/          # General-domain dataset
 │   └── pubmedqa/         # Domain-specific dataset (biomedical QA)
-├── models/               # (Optional) Custom model modules
+├── models/               
 ├── utils/
 │   ├── __init__.py
 │   ├── data_loader.py    # Loads and preprocesses datasets
@@ -111,6 +111,6 @@ This project is part of a research investigation on continual pretraining and ca
 
 ## 📬 Contact
 
-Emma [Your Last Name]  
+Emma Whang
 AI & Statistics @ Purdue University  
-✉️ [Your Email]
+✉️ whang@purdue.edu
