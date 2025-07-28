@@ -1,7 +1,6 @@
 import sys
 import os
 
-# LZMA Workaround - Add this BEFORE any other imports
 try:
     import lzma
 except ImportError:
