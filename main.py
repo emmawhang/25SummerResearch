@@ -22,6 +22,8 @@ from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import torch
+from utils.ewc import EWC
+from utils.mas import MAS
 
 def train_model(model, train_data, val_data, epochs, dataset_name):
     num_workers = 2  # Parallel data loading (2-4 for Mac)
@@ -88,6 +90,83 @@ def train_model(model, train_data, val_data, epochs, dataset_name):
         # val_metrics = evaluate_model(model, val_data, dataset_name)
         # print(f"Epoch {epoch+1} - Val Accuracy: {val_metrics['accuracy']:.4f}")
 
+def train_with_regularization(model, train_data, val_data, epochs, dataset_name, reg_type=None, reg_lambda=0.4, fisher_data=None):
+    # This function is similar to train_model, but adds EWC or MAS loss if reg_type is set
+    # reg_type: None, 'ewc', or 'mas'
+    # fisher_data: data to compute Fisher or MAS importance (usually previous task's data)
+    num_workers = 2  # Parallel data loading (2-4 for Mac)
+    train_loader = DataLoader(
+        train_data,
+        batch_size=Config.BATCH_SIZE,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0)
+    )
+
+    if Config.DEVICE == "mps":
+        print("⚠️ Warning: Mixed precision on MPS is experimental and may cause instability. Falling back to float32.")
+        use_mixed_precision = False
+    else:
+        use_mixed_precision = Config.DEVICE in ['cuda']
+
+    scaler = torch.amp.GradScaler(enabled=use_mixed_precision)
+    optimizer = AdamW(model.parameters(), lr=Config.LEARNING_RATE)
+
+    if reg_type == 'ewc':
+        reg = EWC(model, fisher_data, device=Config.DEVICE)
+    elif reg_type == 'mas':
+        reg = MAS(model, fisher_data, device=Config.DEVICE)
+    else:
+        reg = None
+
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        batch_count = 0
+
+        progress_bar = tqdm(
+            train_loader,
+            desc=f"{dataset_name} Epoch {epoch+1}/{epochs}",
+            unit="batch",
+        )
+        for batch in progress_bar:
+            inputs = {
+                k: v.to(Config.DEVICE, non_blocking=(Config.DEVICE == "cuda"))
+                for k, v in batch.items()
+        }
+        if Config.DEVICE == "cuda":
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                outputs = model(**inputs)
+                loss = outputs.loss
+        else:
+            outputs = model(**inputs)
+            loss = outputs.loss
+            if reg is not None:
+                loss += reg_lambda * reg.penalty(model)
+
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        total_loss += loss.item()
+        batch_count += 1
+        progress_bar.set_postfix({
+            'loss': f"{total_loss/batch_count:.4f}",
+            'device': Config.DEVICE
+        })
+
+        # Memory cleanup
+        if Config.DEVICE == "mps":
+            torch.mps.empty_cache()
+            
+        elif Config.DEVICE == "cuda":
+            torch.cuda.empty_cache()
+
+        # Validation (optional, you may want to implement this)
+        # val_metrics = evaluate_model(model, val_data, dataset_name)
+        # print(f"Epoch {epoch+1} - Val Accuracy: {val_metrics['accuracy']:.4f}")
+
 def main():
     try:
         tokenizer = DistilBertTokenizer.from_pretrained(Config.MODEL_NAME)
@@ -106,7 +185,9 @@ def main():
         print("Falling back to CPU.")
         model = model.to("cpu")
 
-    # Phase 1: General Training (AG News)
+       
+
+    # Phase 1: General Training (AG News) -
     print("Starting Phase 1: General Training on AG News")
     ag_train, ag_val, ag_test = prepare_datasets("ag_news", tokenizer)
     train_model(model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
@@ -122,8 +203,33 @@ def main():
     # Catastrophic Forgetting Score
     # You need to evaluate AG News again after PubMedQA training to get ag_test_metrics_post
     ag_test_metrics_post = evaluate_model(model, ag_test, "AG News")
+    
     forgetting_score = ag_test_metrics.get("accuracy", 0.0) - ag_test_metrics_post.get("accuracy", 0.0)
+    # check 
     print(f"\nCatastrophic Forgetting Score (ΔAccuracy): {forgetting_score:.4f}")
+
+    # --- EWC ---
+    print("\nStarting EWC regularized training...")
+    # 1. Train on AG News as before
+    # 2. Compute Fisher information on AG News
+    fisher_data = DataLoader(ag_train, batch_size=Config.BATCH_SIZE)
+    ewc_model = DistilBertForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(Config.DEVICE)
+    train_model(ewc_model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
+    ewc = EWC(ewc_model, fisher_data, device=Config.DEVICE)
+    # 3. Train on PubMedQA with EWC penalty
+    train_with_regularization(ewc_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA", reg_type='ewc', reg_lambda=0.4, fisher_data=fisher_data)
+    # 4. Evaluate as before
+
+    # --- MAS ---
+    print("\nStarting MAS regularized training...")
+    mas_model = DistilBertForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(Config.DEVICE)
+    train_model(mas_model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
+    mas = MAS(mas_model, fisher_data, device=Config.DEVICE)
+    train_with_regularization(mas_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA", reg_type='mas', reg_lambda=0.4, fisher_data=fisher_data)
+    # 4. Evaluate as before
+
+    # --- Compare Results ---
+    # Print or plot the catastrophic forgetting scores for baseline, EWC, and MAS
 
 if __name__ == "__main__":
     main()
