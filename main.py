@@ -19,11 +19,12 @@ from utils.eval_metrics import evaluate_model
 from config import Config
 
 from torch.optim import AdamW
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 import torch
 from utils.ewc import EWC
 from utils.mas import MAS
+import numpy as np
 
 def train_model(model, train_data, val_data, epochs, dataset_name):
     num_workers = 2  # Parallel data loading (2-4 for Mac)
@@ -94,6 +95,7 @@ def train_with_regularization(model, train_data, val_data, epochs, dataset_name,
     # This function is similar to train_model, but adds EWC or MAS loss if reg_type is set
     # reg_type: None, 'ewc', or 'mas'
     # fisher_data: data to compute Fisher or MAS importance (usually previous task's data)
+
     num_workers = 2  # Parallel data loading (2-4 for Mac)
     train_loader = DataLoader(
         train_data,
@@ -185,9 +187,7 @@ def main():
         print("Falling back to CPU.")
         model = model.to("cpu")
 
-       
-
-    # Phase 1: General Training (AG News) -
+    # Phase 1: General Training (AG News) 
     print("Starting Phase 1: General Training on AG News")
     ag_train, ag_val, ag_test = prepare_datasets("ag_news", tokenizer)
     train_model(model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
@@ -212,13 +212,19 @@ def main():
     print("\nStarting EWC regularized training...")
     # 1. Train on AG News as before
     # 2. Compute Fisher information on AG News
-    fisher_data = DataLoader(ag_train, batch_size=Config.BATCH_SIZE)
+
+    # use small random subset of 1000 samples for computation 
+    subset_indices = np.random.choice(len(ag_train), size=1000, replace=False)
+    fisher_subset = Subset(ag_train, subset_indices)
+    fisher_data = DataLoader(fisher_subset, batch_size=Config.BATCH_SIZE)
+
     ewc_model = DistilBertForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(Config.DEVICE)
     train_model(ewc_model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
     ewc = EWC(ewc_model, fisher_data, device=Config.DEVICE)
+
     # 3. Train on PubMedQA with EWC penalty
     train_with_regularization(ewc_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA", reg_type='ewc', reg_lambda=0.4, fisher_data=fisher_data)
-    # 4. Evaluate as before
+
 
     # --- MAS ---
     print("\nStarting MAS regularized training...")
@@ -226,10 +232,23 @@ def main():
     train_model(mas_model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
     mas = MAS(mas_model, fisher_data, device=Config.DEVICE)
     train_with_regularization(mas_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA", reg_type='mas', reg_lambda=0.4, fisher_data=fisher_data)
+    
     # 4. Evaluate as before
+    ewc_ag_test_metrics_post = evaluate_model(ewc_model, ag_test, "AG News (EWC)")
+    ewc_pubmed_test_metrics = evaluate_model(ewc_model, pubmed_test, "PubMedQA (EWC)")
+    ewc_forgetting_score = ag_test_metrics.get("accuracy", 0.0) - ewc_ag_test_metrics_post.get("accuracy", 0.0)
+
+    mas_ag_test_metrics_post = evaluate_model(mas_model, ag_test, "AG News (MAS)")
+    mas_pubmed_test_metrics = evaluate_model(mas_model, pubmed_test, "PubMedQA (MAS)")
+    mas_forgetting_score = ag_test_metrics.get("accuracy", 0.0) - mas_ag_test_metrics_post.get("accuracy", 0.0)
 
     # --- Compare Results ---
-    # Print or plot the catastrophic forgetting scores for baseline, EWC, and MAS
+    print("\n--- Catastrophic Forgetting Scores ---")
+    print(f"Baseline: {forgetting_score:.4f}")
+    print(f"EWC:      {ewc_forgetting_score:.4f}")
+    print(f"MAS:      {mas_forgetting_score:.4f}")
+
+    # knowledge injection ?
 
 if __name__ == "__main__":
     main()

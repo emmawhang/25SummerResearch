@@ -14,9 +14,9 @@ def evaluate_model(model, dataset, dataset_name):
     predictions = []
     true_labels = []
 
-    loader = DataLoader(dataset, batch_size=Config.BATCH_SIZE)  # Add this line
+    loader = DataLoader(dataset, batch_size=Config.BATCH_SIZE) 
 
-    for batch in loader:  # Use loader, not dataset
+    for batch in loader: 
         inputs = {k: v.to(Config.DEVICE) for k, v in batch.items() if k != 'labels'}
         with torch.no_grad():
             outputs = model(**inputs)

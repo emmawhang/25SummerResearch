@@ -29,4 +29,4 @@ class EWC:
         for n, p in model.named_parameters():
             if n in self.fisher:
                 loss += (self.fisher[n] * (p - self.params[n]) ** 2).sum()
-        return loss
+        return 0.5 * loss 
