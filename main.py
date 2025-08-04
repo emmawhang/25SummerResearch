@@ -1,5 +1,8 @@
 import sys
 import os
+import torch
+import numpy as np
+from tqdm import tqdm
 
 try:
     import lzma
@@ -13,18 +16,14 @@ current_path = os.environ.get('PATH', '')
 if usr_local_bin not in current_path.split(os.pathsep):
     os.environ['PATH'] = f"{current_path}{os.pathsep}{usr_local_bin}" if current_path else usr_local_bin
 
-from transformers import DistilBertForSequenceClassification, DistilBertTokenizer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from utils.data_loader import prepare_datasets
 from utils.eval_metrics import evaluate_model
 from config import Config
-
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Subset
-from tqdm import tqdm
-import torch
 from utils.ewc import EWC
 from utils.mas import MAS
-import numpy as np
 
 def train_model(model, train_data, val_data, epochs, dataset_name):
     num_workers = 2  # Parallel data loading (2-4 for Mac)
@@ -109,6 +108,7 @@ def train_with_regularization(model, train_data, val_data, epochs, dataset_name,
     if Config.DEVICE == "mps":
         print("⚠️ Warning: Mixed precision on MPS is experimental and may cause instability. Falling back to float32.")
         use_mixed_precision = False
+
     else:
         use_mixed_precision = Config.DEVICE in ['cuda']
 
@@ -170,74 +170,59 @@ def train_with_regularization(model, train_data, val_data, epochs, dataset_name,
         # print(f"Epoch {epoch+1} - Val Accuracy: {val_metrics['accuracy']:.4f}")
 
 def main():
-    try:
-        tokenizer = DistilBertTokenizer.from_pretrained(Config.MODEL_NAME)
-        model = DistilBertForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4)
-        if Config.DEVICE == "cuda" and not torch.cuda.is_available():
-            print("CUDA device not available. Falling back to CPU.")
-            device = "cpu"
-        elif Config.DEVICE == "mps" and not torch.backends.mps.is_available():
-            print("MPS device not available. Falling back to CPU.")
-            device = "cpu"
-        else:
-            device = Config.DEVICE
-        model = model.to(device)
-    except Exception as e:
-        print(f"Error moving model to device '{Config.DEVICE}': {e}")
-        print("Falling back to CPU.")
-        model = model.to("cpu")
+    # Load tokenizer and model
+    tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
+    model = AutoModelForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4)
+    device = Config.DEVICE
+    if device == "cuda" and not torch.cuda.is_available():
+        print("CUDA device not available. Falling back to CPU.")
+        device = "cpu"
+    elif device == "mps" and not torch.backends.mps.is_available():
+        print("MPS device not available. Falling back to CPU.")
+        device = "cpu"
+    model = model.to(device)
 
-    # Phase 1: General Training (AG News) 
-    print("Starting Phase 1: General Training on AG News")
+    # Prepare datasets
     ag_train, ag_val, ag_test = prepare_datasets("ag_news", tokenizer)
-    train_model(model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
+    pubmed_train, pubmed_val, pubmed_test = prepare_datasets(Config.PUBMEDQA_DATASET_NAME, tokenizer)
+
+    # Baseline: Evaluate AG News before PubMedQA training
     ag_test_metrics = evaluate_model(model, ag_test, "AG News")
 
-    # Phase 2: Domain Pretraining (PubMedQA)
-    print("\nStarting Phase 2: Domain Training on PubMedQA")
-    
-    pubmed_train, pubmed_val, pubmed_test = prepare_datasets(Config.PUBMEDQA_DATASET_NAME, tokenizer)
+    # Fine-tune on PubMedQA
+    print("\nStarting PubMedQA fine-tuning...")
     train_model(model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA")
     pubmed_test_metrics = evaluate_model(model, pubmed_test, "PubMedQA")
 
     # Catastrophic Forgetting Score
-    # You need to evaluate AG News again after PubMedQA training to get ag_test_metrics_post
     ag_test_metrics_post = evaluate_model(model, ag_test, "AG News")
-    
     forgetting_score = ag_test_metrics.get("accuracy", 0.0) - ag_test_metrics_post.get("accuracy", 0.0)
-    # check 
     print(f"\nCatastrophic Forgetting Score (ΔAccuracy): {forgetting_score:.4f}")
 
     # --- EWC ---
     print("\nStarting EWC regularized training...")
-    # 1. Train on AG News as before
-    # 2. Compute Fisher information on AG News
-
-    # use small random subset of 1000 samples for computation 
     subset_indices = np.random.choice(len(ag_train), size=1000, replace=False)
     fisher_subset = Subset(ag_train, subset_indices)
     fisher_data = DataLoader(fisher_subset, batch_size=Config.BATCH_SIZE)
 
-    ewc_model = DistilBertForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(Config.DEVICE)
-    train_model(ewc_model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
-    ewc = EWC(ewc_model, fisher_data, device=Config.DEVICE)
-
-    # 3. Train on PubMedQA with EWC penalty
-    train_with_regularization(ewc_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA", reg_type='ewc', reg_lambda=0.4, fisher_data=fisher_data)
-
-
-    # --- MAS ---
-    print("\nStarting MAS regularized training...")
-    mas_model = DistilBertForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(Config.DEVICE)
-    train_model(mas_model, ag_train, ag_val, Config.AG_NEWS_EPOCHS, "AG News")
-    mas = MAS(mas_model, fisher_data, device=Config.DEVICE)
-    train_with_regularization(mas_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA", reg_type='mas', reg_lambda=0.4, fisher_data=fisher_data)
-    
-    # 4. Evaluate as before
+    ewc_model = AutoModelForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(device)
+    ewc = EWC(ewc_model, fisher_data, device=device)
+    train_with_regularization(
+        ewc_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS,
+        "PubMedQA", reg_type='ewc', reg_lambda=0.4, fisher_data=fisher_data
+    )
     ewc_ag_test_metrics_post = evaluate_model(ewc_model, ag_test, "AG News (EWC)")
     ewc_pubmed_test_metrics = evaluate_model(ewc_model, pubmed_test, "PubMedQA (EWC)")
     ewc_forgetting_score = ag_test_metrics.get("accuracy", 0.0) - ewc_ag_test_metrics_post.get("accuracy", 0.0)
 
+    # --- MAS ---
+    print("\nStarting MAS regularized training...")
+    mas_model = AutoModelForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(device)
+    mas = MAS(mas_model, fisher_data, device=device)
+    train_with_regularization(
+        mas_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS,
+        "PubMedQA", reg_type='mas', reg_lambda=0.4, fisher_data=fisher_data
+    )
     mas_ag_test_metrics_post = evaluate_model(mas_model, ag_test, "AG News (MAS)")
     mas_pubmed_test_metrics = evaluate_model(mas_model, pubmed_test, "PubMedQA (MAS)")
     mas_forgetting_score = ag_test_metrics.get("accuracy", 0.0) - mas_ag_test_metrics_post.get("accuracy", 0.0)
@@ -247,8 +232,6 @@ def main():
     print(f"Baseline: {forgetting_score:.4f}")
     print(f"EWC:      {ewc_forgetting_score:.4f}")
     print(f"MAS:      {mas_forgetting_score:.4f}")
-
-    # knowledge injection ?
 
 if __name__ == "__main__":
     main()
