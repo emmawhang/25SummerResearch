@@ -11,7 +11,7 @@ class Config:
 
     MODEL_NAME = "roberta-base"
     MAX_LENGTH = 512              
-    BATCH_SIZE = 1                  
+    BATCH_SIZE = 16                  
     LEARNING_RATE = 2e-5
     AG_NEWS_EPOCHS = 1
-    PUBMEDQA_EPOCHS = 1
+    PUBMEDQA_EPOCHS = 3

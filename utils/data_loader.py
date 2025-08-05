@@ -1,7 +1,9 @@
 from datasets import load_dataset
 from torch.utils.data import Dataset
 import torch
-from config import Config
+from utils.config import Config
+import pandas as pd
+
 
 class CustomDataset(Dataset):
     def __init__(self, encodings, labels):
@@ -89,3 +91,17 @@ def prepare_datasets(dataset_name, tokenizer, train_subset=None, val_subset=None
     test_data = CustomDataset(tokenized["test"] if "test" in tokenized else tokenized["validation"] if "validation" in tokenized else tokenized["train"], test_labels)
 
     return train_data, val_data, test_data
+
+def load_pubmedqa(path="data/pubmedqa/train.csv"):
+    df = pd.read_csv(path)
+    return {
+        "question": df["question"].tolist(),
+        "context": df["context"].fillna("").tolist(),
+        "label": df["label"].tolist()
+    }
+
+def load_biomedical_corpus(path="data/pubmed_abstracts.json"):
+    import json
+    with open(path) as f:
+        return json.load(f)  # List[str]
+

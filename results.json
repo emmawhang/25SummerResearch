@@ -1,0 +1,40 @@
+{
+  "ag_test_metrics_before": {
+    "dataset": "AG News",
+    "accuracy": 0.25,
+    "num_samples": 7600
+  },
+  "pubmed_test_metrics": {
+    "dataset": "PubMedQA",
+    "accuracy": 0.11,
+    "num_samples": 1000
+  },
+  "ag_test_metrics_after": {
+    "dataset": "AG News",
+    "accuracy": 0.3352631578947368,
+    "num_samples": 7600
+  },
+  "ewc_ag_test_metrics_post": {
+    "dataset": "AG News (EWC)",
+    "accuracy": 0.25,
+    "num_samples": 7600
+  },
+  "ewc_pubmed_test_metrics": {
+    "dataset": "PubMedQA (EWC)",
+    "accuracy": 0.0,
+    "num_samples": 1000
+  },
+  "mas_ag_test_metrics_post": {
+    "dataset": "AG News (MAS)",
+    "accuracy": 0.25,
+    "num_samples": 7600
+  },
+  "mas_pubmed_test_metrics": {
+    "dataset": "PubMedQA (MAS)",
+    "accuracy": 0.0,
+    "num_samples": 1000
+  },
+  "forgetting_score": -0.08526315789473682,
+  "ewc_forgetting_score": 0.0,
+  "mas_forgetting_score": 0.0
+}

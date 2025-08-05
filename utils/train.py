@@ -1,3 +1,5 @@
+from config import Config  # Make sure config.py exists and defines Config
+
 def train_model(model, train_data, val_data, epochs, dataset_name):
     num_workers = 2  # Parallel data loading (2-4 for Mac)
     train_loader = DataLoader(

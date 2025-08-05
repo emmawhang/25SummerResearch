@@ -2,7 +2,7 @@ from sklearn.metrics import accuracy_score
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
-from config import Config
+from utils.config import Config
 
 
 def evaluate_model(model, dataset, dataset_name):

@@ -1,6 +1,9 @@
 import sys
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import torch
+import json
 import numpy as np
 from tqdm import tqdm
 
@@ -18,12 +21,12 @@ if usr_local_bin not in current_path.split(os.pathsep):
 
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from utils.data_loader import prepare_datasets
-from utils.eval_metrics import evaluate_model
-from config import Config
+from models.eval_metrics import evaluate_model
+from utils.config import Config
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Subset
-from utils.ewc import EWC
-from utils.mas import MAS
+from continual_learning.ewc import EWC
+from continual_learning.mas import MAS
 
 def train_model(model, train_data, val_data, epochs, dataset_name):
     num_workers = 2  # Parallel data loading (2-4 for Mac)
@@ -85,10 +88,6 @@ def train_model(model, train_data, val_data, epochs, dataset_name):
             
         elif Config.DEVICE == "cuda":
             torch.cuda.empty_cache()
-
-        # Validation (optional, you may want to implement this)
-        # val_metrics = evaluate_model(model, val_data, dataset_name)
-        # print(f"Epoch {epoch+1} - Val Accuracy: {val_metrics['accuracy']:.4f}")
 
 def train_with_regularization(model, train_data, val_data, epochs, dataset_name, reg_type=None, reg_lambda=0.4, fisher_data=None):
     # This function is similar to train_model, but adds EWC or MAS loss if reg_type is set
@@ -165,14 +164,10 @@ def train_with_regularization(model, train_data, val_data, epochs, dataset_name,
         elif Config.DEVICE == "cuda":
             torch.cuda.empty_cache()
 
-        # Validation (optional, you may want to implement this)
-        # val_metrics = evaluate_model(model, val_data, dataset_name)
-        # print(f"Epoch {epoch+1} - Val Accuracy: {val_metrics['accuracy']:.4f}")
-
 def main():
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(Config.MODEL_NAME)
-    model = AutoModelForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4)
+    model = AutoModelForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=2)
     device = Config.DEVICE
     if device == "cuda" and not torch.cuda.is_available():
         print("CUDA device not available. Falling back to CPU.")
@@ -188,14 +183,19 @@ def main():
 
     # Baseline: Evaluate AG News before PubMedQA training
     ag_test_metrics = evaluate_model(model, ag_test, "AG News")
+    print("AG News test metrics BEFORE PubMedQA:", ag_test_metrics)
+
 
     # Fine-tune on PubMedQA
     print("\nStarting PubMedQA fine-tuning...")
     train_model(model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS, "PubMedQA")
     pubmed_test_metrics = evaluate_model(model, pubmed_test, "PubMedQA")
+    print("PubMedQA test metrics:", pubmed_test_metrics)
+
 
     # Catastrophic Forgetting Score
     ag_test_metrics_post = evaluate_model(model, ag_test, "AG News")
+    print("AG News test metrics AFTER PubMedQA:", ag_test_metrics_post)
     forgetting_score = ag_test_metrics.get("accuracy", 0.0) - ag_test_metrics_post.get("accuracy", 0.0)
     print(f"\nCatastrophic Forgetting Score (ΔAccuracy): {forgetting_score:.4f}")
 
@@ -217,7 +217,7 @@ def main():
 
     # --- MAS ---
     print("\nStarting MAS regularized training...")
-    mas_model = AutoModelForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=4).to(device)
+    mas_model = AutoModelForSequenceClassification.from_pretrained(Config.MODEL_NAME, num_labels=2).to(device)
     mas = MAS(mas_model, fisher_data, device=device)
     train_with_regularization(
         mas_model, pubmed_train, pubmed_val, Config.PUBMEDQA_EPOCHS,
@@ -232,6 +232,22 @@ def main():
     print(f"Baseline: {forgetting_score:.4f}")
     print(f"EWC:      {ewc_forgetting_score:.4f}")
     print(f"MAS:      {mas_forgetting_score:.4f}")
+
+
+    results = {
+        "ag_test_metrics_before": ag_test_metrics,
+        "pubmed_test_metrics": pubmed_test_metrics,
+        "ag_test_metrics_after": ag_test_metrics_post,
+        "ewc_ag_test_metrics_post": ewc_ag_test_metrics_post,
+        "ewc_pubmed_test_metrics": ewc_pubmed_test_metrics,
+        "mas_ag_test_metrics_post": mas_ag_test_metrics_post,
+        "mas_pubmed_test_metrics": mas_pubmed_test_metrics,
+        "forgetting_score": forgetting_score,
+        "ewc_forgetting_score": ewc_forgetting_score,
+        "mas_forgetting_score": mas_forgetting_score
+    }
+    with open("results.json", "w") as f:
+        json.dump(results, f, indent=2)
 
 if __name__ == "__main__":
     main()
